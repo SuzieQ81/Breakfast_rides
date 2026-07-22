@@ -26,7 +26,7 @@ def format_time(seconds):
 
 
 def fetch_zwiftpower_data(event_id):
-    """Procura os dados de um evento no ZwiftPower usando o timestamp dinâmico."""
+    """Procura os dados de um evento no ZwiftPower usando timestamp para evitar cache."""
     cookie_str = st.secrets.get("ZWIFTPOWER_COOKIE", "")
 
     headers = {
@@ -38,7 +38,6 @@ def fetch_zwiftpower_data(event_id):
         "Cookie": cookie_str,
     }
 
-    # Timestamp dinâmico (cache buster)
     timestamp = int(time.time() * 1000)
     url = f"https://zwiftpower.com/cache3/results/{event_id}_view.json?_={timestamp}"
 
@@ -48,7 +47,7 @@ def fetch_zwiftpower_data(event_id):
             return response.json()
         return None
     except requests.exceptions.RequestException as e:
-        st.error(f"Erro na requisição: {e}")
+        st.error(f"Erro na conexão com ZwiftPower: {e}")
         return None
 
 
@@ -60,128 +59,85 @@ if st.sidebar.button("Carregar Dados") or event_id_input:
     with st.spinner("A carregar dados do ZwiftPower em tempo real..."):
         data_json = fetch_zwiftpower_data(event_id_input)
 
-        if data_json:
+        if data_json and "data" in data_json:
             st.success("Dados do ZwiftPower carregados com sucesso!")
 
-            # Definição das Tabs
             tab_geral, tab_primes = st.tabs(
                 ["🏆 Classificação Geral", "⚡ Primes / Sprints"]
             )
 
+            # Preparar DataFrame principal
+            results = data_json["data"]
+            df = pd.DataFrame(results)
+
+            if "name" in df.columns:
+                df["name"] = df["name"].apply(lambda x: html.unescape(str(x)))
+
+            if "time_gun" in df.columns:
+                df["Tempo"] = df["time_gun"].apply(format_time)
+
             # --- TAB 1: CLASSIFICAÇÃO GERAL ---
             with tab_geral:
-                if "data" in data_json:
-                    results = data_json["data"]
-                    df = pd.DataFrame(results)
+                column_mapping = {
+                    "pos": "Pos",
+                    "position_in_cat": "Pos Cat",
+                    "name": "Nome",
+                    "tname": "Equipa",
+                    "ftp": "FTP",
+                    "Tempo": "Tempo",
+                    "gap": "Diferença (s)",
+                }
 
-                    if "name" in df.columns:
-                        df["name"] = df["name"].apply(
-                            lambda x: html.unescape(str(x))
-                        )
+                cols_to_show = [
+                    col for col in column_mapping.keys() if col in df.columns
+                ]
+                df_display = df[cols_to_show].rename(columns=column_mapping)
 
-                    if "time_gun" in df.columns:
-                        df["Tempo"] = df["time_gun"].apply(format_time)
+                col1, col2, col3 = st.columns(3)
+                col1.metric("Total de Atletas", len(df))
+                if "Tempo" in df_display.columns and not df_display.empty:
+                    col2.metric("Tempo Vencedor", df_display["Tempo"].iloc[0])
+                if "Equipa" in df_display.columns:
+                    col3.metric("Equipas Presentes", df_display["Equipa"].nunique())
 
-                    column_mapping = {
-                        "pos": "Pos",
-                        "position_in_cat": "Pos Cat",
+                st.markdown("---")
+                st.dataframe(
+                    df_display,
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+            # --- TAB 2: PRIMES / SPRINTS ---
+            with tab_primes:
+                st.subheader("Pontuação e Primes do Evento")
+
+                # Verificar se existem pontos atribuídos na classificação
+                if "pts" in df.columns and df["pts"].replace("", None).notnull().any():
+                    df_pts = df[df["pts"].replace("", None).notnull()].copy()
+                    
+                    column_mapping_pts = {
+                        "pts_pos": "Pos Pontos",
+                        "pos": "Pos Geral",
                         "name": "Nome",
                         "tname": "Equipa",
-                        "ftp": "FTP",
-                        "Tempo": "Tempo",
-                        "gap": "Diferença (s)",
+                        "pts": "Pontos Totais",
                     }
-
-                    cols_to_show = [
-                        col for col in column_mapping.keys() if col in df.columns
-                    ]
-                    df_display = df[cols_to_show].rename(
-                        columns=column_mapping
-                    )
-
-                    col1, col2, col3 = st.columns(3)
-                    col1.metric("Total de Atletas", len(df))
-                    if "Tempo" in df_display.columns and not df_display.empty:
-                        col2.metric(
-                            "Tempo Vencedor", df_display["Tempo"].iloc[0]
-                        )
-                    if "Equipa" in df_display.columns:
-                        col3.metric(
-                            "Equipas Presentes",
-                            df_display["Equipa"].nunique(),
-                        )
-
-                    st.markdown("---")
+                    
+                    cols_pts = [col for col in column_mapping_pts.keys() if col in df_pts.columns]
+                    df_pts_display = df_pts[cols_pts].rename(columns=column_mapping_pts)
+                    
                     st.dataframe(
-                        df_display,
+                        df_pts_display,
                         use_container_width=True,
                         hide_index=True,
                     )
-
-            # --- TAB 2: PRIMES / SPRINTS (RAIO-X DE DIAGNÓSTICO) ---
-            with tab_primes:
-                st.subheader("🔍 Raio-X dos Primes")
-
-                timestamp = int(time.time() * 1000)
-                cookie_str = st.secrets.get("ZWIFTPOWER_COOKIE", "")
-                headers = {
-                    "User-Agent": (
-                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
-                        " AppleWebKit/537.36 (KHTML, like Gecko)"
-                        " Chrome/150.0.0.0 Safari/537.36"
-                    ),
-                    "X-Requested-With": "XMLHttpRequest",
-                    "Cookie": cookie_str,
-                }
-
-                url_primes = f"https://zwiftpower.com/cache3/results/{event_id_input}_primes.json?_={timestamp}"
-                res_primes = requests.get(url_primes, headers=headers)
-
-                st.write(
-                    f"**Status HTTP de `_primes.json`:** `{res_primes.status_code}`"
-                )
-
-                if res_primes.status_code == 200:
-                    st.success("🎉 O endpoint `_primes.json` respondeu!")
-                    try:
-                        st.json(res_primes.json())
-                    except Exception as e:
-                        st.error(f"Erro ao converter JSON: {e}")
-                        st.code(res_primes.text[:500])
                 else:
-                    st.warning(
-                        "O endpoint `_primes.json` não devolveu 200. A inspecionar o `_view.json`:"
+                    st.info(
+                        "ℹ️ Este evento não possui classificação de Primes/Pontos registada nas definições "
+                        "ou a corrida ainda não atribuiu pontos por segmento."
                     )
-
-                    if "data" in data_json and len(data_json["data"]) > 0:
-                        primeiro_ciclista = data_json["data"][0]
-
-                        chaves_interessantes = {
-                            k: v
-                            for k, v in primeiro_ciclista.items()
-                            if any(
-                                x in k.lower()
-                                for x in [
-                                    "prime",
-                                    "sprint",
-                                    "lap",
-                                    "pts",
-                                    "point",
-                                    "seg",
-                                    "mfl",
-                                ]
-                            )
-                        }
-
-                        st.write(
-                            "**Campos de sprints/pontos no 1º ciclista:**"
-                        )
-                        st.json(chaves_interessantes)
-
-                        with st.expander("👁️ Ver TODAS as chaves de um ciclista"):
-                            st.json(list(primeiro_ciclista.keys()))
 
         else:
             st.error(
-                "Não foi possível obter a resposta do ZwiftPower. Verifica se o Cookie nos Secrets ainda está válido."
+                "Não foi possível obter os dados do ZwiftPower. Verifica o ID do evento ou a validade do Cookie."
             )
