@@ -1,6 +1,5 @@
 import html
 import time
-from bs4 import BeautifulSoup
 import pandas as pd
 import requests
 import streamlit as st
@@ -25,10 +24,8 @@ def get_session():
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
                 "Chrome/122.0.0.0 Safari/537.36"
             ),
-            "Accept": (
-                "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
-            ),
-            "Accept-Language": "en-US,en;q=0.9",
+            "Accept": "application/json, text/javascript, */*; q=0.01",
+            "X-Requested-With": "XMLHttpRequest",
             "Cookie": cookie_str,
         }
     )
@@ -74,7 +71,6 @@ def fetch_primes_json(session, event_id):
             if res.status_code == 200:
                 data = res.json()
 
-                # Caso venha no formato { "data": [...] }
                 if isinstance(data, dict) and "data" in data:
                     data = data["data"]
 
@@ -82,8 +78,6 @@ def fetch_primes_json(session, event_id):
                     return pd.DataFrame(data)
         except Exception:
             continue
-
-    return None
 
     return None
 
@@ -150,9 +144,15 @@ if st.sidebar.button("Carregar Dados") or event_id_input:
             with tab_primes:
                 st.subheader("⚡ Resultados de Banners e Primes por Volta")
 
-                df_primes = fetch_primes_html(session, event_id_input)
+                df_primes = fetch_primes_json(session, event_id_input)
 
                 if df_primes is not None and not df_primes.empty:
+                    for col in df_primes.columns:
+                        if df_primes[col].dtype == "object":
+                            df_primes[col] = df_primes[col].apply(
+                                lambda x: html.unescape(str(x)) if x else x
+                            )
+
                     st.dataframe(
                         df_primes,
                         use_container_width=True,
@@ -160,8 +160,7 @@ if st.sidebar.button("Carregar Dados") or event_id_input:
                     )
                 else:
                     st.info(
-                        "Não foi possível extrair a tabela de Primes automaticamente via scraping HTML. "
-                        "Verifica se a sessão do Cookie nos Secrets expirou ou precisa de atualização."
+                        "Nenhum registo de Primes/Sprints encontrado para este evento ou a corrida ainda não atribuiu pontos por segmento."
                     )
 
         else:
