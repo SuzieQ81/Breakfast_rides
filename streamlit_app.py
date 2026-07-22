@@ -1,183 +1,48 @@
-import html
-import re
-import time
-from bs4 import BeautifulSoup
-import pandas as pd
-import requests
-import streamlit as st
-
-# Configuração da página
-st.set_page_config(
-    page_title="Breakfast Rides Dashboard", page_icon="🚴", layout="wide"
-)
-
-st.title("🚴 Breakfast Rides - Live Dashboard")
-
-
-def get_session():
-    """Cria uma sessão HTTP robusta com headers de browser real."""
-    session = requests.Session()
-    cookie_str = st.secrets.get("ZWIFTPOWER_COOKIE", "")
-
-    session.headers.update(
-        {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/122.0.0.0 Safari/537.36"
-            ),
-            "Accept": (
-                "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
-            ),
-            "Accept-Language": "en-US,en;q=0.9",
-            "Cookie": cookie_str,
-        }
-    )
-    return session
-
-
-def format_time(seconds):
-    """Converte segundos para formato MM:SS ou HH:MM:SS."""
-    try:
-        sec = float(seconds)
-        mins, secs = divmod(sec, 60)
-        hours, mins = divmod(mins, 60)
-        if hours > 0:
-            return f"{int(hours):02d}:{int(mins):02d}:{int(secs):02d}"
-        return f"{int(mins):02d}:{int(secs):02d}"
-    except (ValueError, TypeError):
-        return seconds
-
-
-def fetch_view_json(session, event_id):
-    """Procura os dados de classificação geral via JSON."""
+def fetch_primes_html(session, event_id):
+    """Procura os dados de primes tentando os endpoints de API e scraping das tabelas HTML."""
+    
+    # 1. Primeira tentativa: Endpoint de dados brutos dos Primes
     timestamp = int(time.time() * 1000)
-    url = f"https://zwiftpower.com/cache3/results/{event_id}_view.json?_={timestamp}"
+    json_url = f"https://zwiftpower.com/cache3/results/{event_id}_primes.json?_={timestamp}"
+    
     try:
-        res = session.get(url, timeout=10)
+        res = session.get(json_url, timeout=10)
         if res.status_code == 200:
-            return res.json()
+            data = res.json()
+            items = data.get("data", data) if isinstance(data, dict) else data
+            if isinstance(items, list) and len(items) > 0:
+                return pd.DataFrame(items)
     except Exception:
         pass
-    return None
 
-
-def fetch_primes_html(session, event_id):
-    """Raspa a tabela de primes diretamente da página/endpoint interno do ZwiftPower."""
-    urls_to_try = [
+    # 2. Segunda tentativa: Scraping da vista de eventos com o parâmetro de ação do ZwiftPower
+    html_urls = [
         f"https://zwiftpower.com/api.php?do=event_primes&zid={event_id}",
-        f"https://zwiftpower.com/events.php?zid={event_id}",
+        f"https://zwiftpower.com/events.php?zid={event_id}&tab=primes",
+        f"https://zwiftpower.com/events.php?zid={event_id}"
     ]
 
-    for url in urls_to_try:
+    for url in html_urls:
         try:
             res = session.get(url, timeout=10)
-            if res.status_code == 200 and "<table" in res.text:
+            if res.status_code == 200:
                 soup = BeautifulSoup(res.text, "html.parser")
+                
+                # Procura qualquer tabela no HTML retornado
                 tables = soup.find_all("table")
-
                 for table in tables:
-                    # Procura a tabela que contém as colunas típicas de Primes
-                    headers = [
-                        th.get_text(strip=True) for th in table.find_all("th")
-                    ]
-                    if any(
-                        h in ["Banner", "Lap", "1st", "2nd"] for h in headers
-                    ):
-                        rows = []
-                        for tr in table.find_all("tr"):
-                            cells = [
-                                td.get_text(strip=True)
-                                for td in tr.find_all(["td", "th"])
-                            ]
-                            if cells:
-                                rows.append(cells)
-
-                        if len(rows) > 1:
-                            df = pd.DataFrame(rows[1:], columns=rows[0])
-                            return df
+                    rows = []
+                    for tr in table.find_all("tr"):
+                        cells = [td.get_text(strip=True) for td in tr.find_all(["td", "th"])]
+                        if cells:
+                            rows.append(cells)
+                    
+                    if len(rows) > 1:
+                        # Se encontrar uma tabela com colunas relevantes
+                        header = rows[0]
+                        if any(col.lower() in ["banner", "lap", "1st", "2nd", "sprint"] for col in header):
+                            return pd.DataFrame(rows[1:], columns=header)
         except Exception:
             continue
+            
     return None
-
-
-# Sidebar
-st.sidebar.header("Configuração do Evento")
-event_id_input = st.sidebar.text_input("ID do Evento ZwiftPower", value="5644967")
-
-if st.sidebar.button("Carregar Dados") or event_id_input:
-    with st.spinner("A carregar dados do ZwiftPower em tempo real..."):
-        session = get_session()
-        data_view = fetch_view_json(session, event_id_input)
-
-        if data_view and "data" in data_view:
-            st.success("Dados do ZwiftPower carregados com sucesso!")
-
-            tab_geral, tab_primes = st.tabs(
-                ["🏆 Classificação Geral", "⚡ Primes / Sprints"]
-            )
-
-            # --- TAB 1: CLASSIFICAÇÃO GERAL ---
-            with tab_geral:
-                results = data_view["data"]
-                df = pd.DataFrame(results)
-
-                if "name" in df.columns:
-                    df["name"] = df["name"].apply(
-                        lambda x: html.unescape(str(x))
-                    )
-
-                if "time_gun" in df.columns:
-                    df["Tempo"] = df["time_gun"].apply(format_time)
-
-                column_mapping = {
-                    "pos": "Pos",
-                    "position_in_cat": "Pos Cat",
-                    "name": "Nome",
-                    "tname": "Equipa",
-                    "ftp": "FTP",
-                    "Tempo": "Tempo",
-                    "gap": "Diferença (s)",
-                }
-
-                cols_to_show = [
-                    col for col in column_mapping.keys() if col in df.columns
-                ]
-                df_display = df[cols_to_show].rename(columns=column_mapping)
-
-                col1, col2, col3 = st.columns(3)
-                col1.metric("Total de Atletas", len(df))
-                if "Tempo" in df_display.columns and not df_display.empty:
-                    col2.metric("Tempo Vencedor", df_display["Tempo"].iloc[0])
-                if "Equipa" in df_display.columns:
-                    col3.metric("Equipas Presentes", df_display["Equipa"].nunique())
-
-                st.markdown("---")
-                st.dataframe(
-                    df_display,
-                    use_container_width=True,
-                    hide_index=True,
-                )
-
-            # --- TAB 2: PRIMES / SPRINTS ---
-            with tab_primes:
-                st.subheader("⚡ Resultados de Banners e Primes por Volta")
-
-                df_primes = fetch_primes_html(session, event_id_input)
-
-                if df_primes is not None and not df_primes.empty:
-                    st.dataframe(
-                        df_primes,
-                        use_container_width=True,
-                        hide_index=True,
-                    )
-                else:
-                    st.info(
-                        "Não foi possível extrair a tabela de Primes automaticamente via scraping HTML. "
-                        "Verifica se a sessão do Cookie nos Secrets expirou ou precisa de atualização."
-                    )
-
-        else:
-            st.error(
-                "Não foi possível obter os dados da classificação geral. Verifica o Cookie nos Secrets."
-            )
