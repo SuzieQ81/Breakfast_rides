@@ -18,10 +18,11 @@ zwift_cookie = st.secrets.get("ZWIFTPOWER_COOKIE", "")
 
 @st.cache_data(ttl=300)  # Cache de 5 minutos para não sobrecarregar a API
 def fetch_zwiftpower_data(event_id, cookie=""):
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-        "Cookie": cookie
-    }
+headers = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36",
+    "X-Requested-With": "XMLHttpRequest",
+    "Cookie": cookie_str,
+}
     
     url_results = f"https://zwiftpower.com/api3/v1/viewer/results/{event_id}"
     url_primes = f"https://zwiftpower.com/api3/v1/viewer/primes/{event_id}"
