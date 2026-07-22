@@ -1,5 +1,7 @@
 import html
+import re
 import time
+from bs4 import BeautifulSoup
 import pandas as pd
 import requests
 import streamlit as st
@@ -10,6 +12,28 @@ st.set_page_config(
 )
 
 st.title("🚴 Breakfast Rides - Live Dashboard")
+
+
+def get_session():
+    """Cria uma sessão HTTP robusta com headers de browser real."""
+    session = requests.Session()
+    cookie_str = st.secrets.get("ZWIFTPOWER_COOKIE", "")
+
+    session.headers.update(
+        {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/122.0.0.0 Safari/537.36"
+            ),
+            "Accept": (
+                "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
+            ),
+            "Accept-Language": "en-US,en;q=0.9",
+            "Cookie": cookie_str,
+        }
+    )
+    return session
 
 
 def format_time(seconds):
@@ -25,41 +49,56 @@ def format_time(seconds):
         return seconds
 
 
-def fetch_zwiftpower_endpoint(event_id, endpoint_type="view"):
-    """Fetch de dados do ZwiftPower (view ou primes) com os headers corretos."""
-    cookie_str = st.secrets.get("ZWIFTPOWER_COOKIE", "")
-
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-            " (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36"
-        ),
-        "X-Requested-With": "XMLHttpRequest",
-        "Referer": f"https://zwiftpower.com/events.php?zid={event_id}",
-        "Cookie": cookie_str,
-    }
-
+def fetch_view_json(session, event_id):
+    """Procura os dados de classificação geral via JSON."""
     timestamp = int(time.time() * 1000)
-    url = f"https://zwiftpower.com/cache3/results/{event_id}_{endpoint_type}.json?_={timestamp}"
-
+    url = f"https://zwiftpower.com/cache3/results/{event_id}_view.json?_={timestamp}"
     try:
-        response = requests.get(url, headers=headers, timeout=10)
-        if response.status_code == 200:
-            return response.json()
-        return None
-    except requests.exceptions.RequestException:
-        return None
+        res = session.get(url, timeout=10)
+        if res.status_code == 200:
+            return res.json()
+    except Exception:
+        pass
+    return None
 
 
-def clean_html_text(text):
-    """Remove tags HTML e unescape de entidades de texto."""
-    if not isinstance(text, str):
-        return text
-    # Remove tags HTML simples se existirem no texto retornado pela API
-    import re
+def fetch_primes_html(session, event_id):
+    """Raspa a tabela de primes diretamente da página/endpoint interno do ZwiftPower."""
+    urls_to_try = [
+        f"https://zwiftpower.com/api.php?do=event_primes&zid={event_id}",
+        f"https://zwiftpower.com/events.php?zid={event_id}",
+    ]
 
-    clean = re.sub("<.*?>", "", text)
-    return html.unescape(clean).strip()
+    for url in urls_to_try:
+        try:
+            res = session.get(url, timeout=10)
+            if res.status_code == 200 and "<table" in res.text:
+                soup = BeautifulSoup(res.text, "html.parser")
+                tables = soup.find_all("table")
+
+                for table in tables:
+                    # Procura a tabela que contém as colunas típicas de Primes
+                    headers = [
+                        th.get_text(strip=True) for th in table.find_all("th")
+                    ]
+                    if any(
+                        h in ["Banner", "Lap", "1st", "2nd"] for h in headers
+                    ):
+                        rows = []
+                        for tr in table.find_all("tr"):
+                            cells = [
+                                td.get_text(strip=True)
+                                for td in tr.find_all(["td", "th"])
+                            ]
+                            if cells:
+                                rows.append(cells)
+
+                        if len(rows) > 1:
+                            df = pd.DataFrame(rows[1:], columns=rows[0])
+                            return df
+        except Exception:
+            continue
+    return None
 
 
 # Sidebar
@@ -68,8 +107,8 @@ event_id_input = st.sidebar.text_input("ID do Evento ZwiftPower", value="5644967
 
 if st.sidebar.button("Carregar Dados") or event_id_input:
     with st.spinner("A carregar dados do ZwiftPower em tempo real..."):
-        data_view = fetch_zwiftpower_endpoint(event_id_input, "view")
-        data_primes = fetch_zwiftpower_endpoint(event_id_input, "primes")
+        session = get_session()
+        data_view = fetch_view_json(session, event_id_input)
 
         if data_view and "data" in data_view:
             st.success("Dados do ZwiftPower carregados com sucesso!")
@@ -124,38 +163,21 @@ if st.sidebar.button("Carregar Dados") or event_id_input:
             with tab_primes:
                 st.subheader("⚡ Resultados de Banners e Primes por Volta")
 
-                if data_primes:
-                    # O nó 'data' costuma conter a lista de segmentos/voltas
-                    primes_list = (
-                        data_primes.get("data", data_primes)
-                        if isinstance(data_primes, dict)
-                        else data_primes
+                df_primes = fetch_primes_html(session, event_id_input)
+
+                if df_primes is not None and not df_primes.empty:
+                    st.dataframe(
+                        df_primes,
+                        use_container_width=True,
+                        hide_index=True,
                     )
-
-                    if isinstance(primes_list, list) and len(primes_list) > 0:
-                        df_primes = pd.DataFrame(primes_list)
-
-                        # Limpar HTML / caracteres especiais de todas as colunas de texto
-                        for col in df_primes.columns:
-                            if df_primes[col].dtype == "object":
-                                df_primes[col] = df_primes[col].apply(
-                                    clean_html_text
-                                )
-
-                        st.dataframe(
-                            df_primes,
-                            use_container_width=True,
-                            hide_index=True,
-                        )
-                    else:
-                        st.info("Nenhum registo de segmento encontrado no ficheiro de primes.")
                 else:
-                    st.warning(
-                        "Não foi possível obter os dados da aba Primes. "
-                        "Verifica se o Cookie do ZwiftPower precisa de ser renovado nos Secrets."
+                    st.info(
+                        "Não foi possível extrair a tabela de Primes automaticamente via scraping HTML. "
+                        "Verifica se a sessão do Cookie nos Secrets expirou ou precisa de atualização."
                     )
 
         else:
             st.error(
-                "Não foi possível obter os dados do ZwiftPower. Verifica o ID do evento ou a validade do Cookie."
+                "Não foi possível obter os dados da classificação geral. Verifica o Cookie nos Secrets."
             )
