@@ -43,7 +43,6 @@ if st.sidebar.button("Carregar Dados") or event_id_input:
 
         if response and response.status_code == 200:
             try:
-                # Converter a resposta HTTP em dicionário Python
                 data_json = response.json()
                 st.success("Dados do ZwiftPower carregados com sucesso!")
 
@@ -53,8 +52,13 @@ if st.sidebar.button("Carregar Dados") or event_id_input:
 
                     st.subheader("Resultados do Evento")
 
-                    # Converter a lista de resultados num DataFrame do Pandas para exibição
                     df = pd.DataFrame(results)
+
+                    # Forçar colunas de texto/mistas a string pura para o PyArrow não crashar
+                    for col in df.columns:
+                        if df[col].dtype == "object":
+                            df[col] = df[col].astype(str)
+
                     st.dataframe(df, use_container_width=True)
 
                 else:
@@ -64,6 +68,4 @@ if st.sidebar.button("Carregar Dados") or event_id_input:
                 st.error(f"Erro ao processar os dados da tabela: {e}")
 
         elif response:
-            st.error(
-                f"Erro ao ligar ao ZwiftPower (Código {response.status_code})."
-            )
+            st.error(f"Erro ao ligar ao ZwiftPower (Código {response.status_code}).")
