@@ -25,8 +25,8 @@ def format_time(seconds):
         return seconds
 
 
-def fetch_zwiftpower_data(event_id):
-    """Procura os dados de um evento no ZwiftPower usando timestamp para evitar cache."""
+def fetch_zwiftpower_endpoint(event_id, endpoint_type="view"):
+    """Fetch de dados do ZwiftPower (view ou primes) com os headers corretos."""
     cookie_str = st.secrets.get("ZWIFTPOWER_COOKIE", "")
 
     headers = {
@@ -35,20 +35,31 @@ def fetch_zwiftpower_data(event_id):
             " (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36"
         ),
         "X-Requested-With": "XMLHttpRequest",
+        "Referer": f"https://zwiftpower.com/events.php?zid={event_id}",
         "Cookie": cookie_str,
     }
 
     timestamp = int(time.time() * 1000)
-    url = f"https://zwiftpower.com/cache3/results/{event_id}_view.json?_={timestamp}"
+    url = f"https://zwiftpower.com/cache3/results/{event_id}_{endpoint_type}.json?_={timestamp}"
 
     try:
         response = requests.get(url, headers=headers, timeout=10)
         if response.status_code == 200:
             return response.json()
         return None
-    except requests.exceptions.RequestException as e:
-        st.error(f"Erro na conexão com ZwiftPower: {e}")
+    except requests.exceptions.RequestException:
         return None
+
+
+def clean_html_text(text):
+    """Remove tags HTML e unescape de entidades de texto."""
+    if not isinstance(text, str):
+        return text
+    # Remove tags HTML simples se existirem no texto retornado pela API
+    import re
+
+    clean = re.sub("<.*?>", "", text)
+    return html.unescape(clean).strip()
 
 
 # Sidebar
@@ -57,27 +68,29 @@ event_id_input = st.sidebar.text_input("ID do Evento ZwiftPower", value="5644967
 
 if st.sidebar.button("Carregar Dados") or event_id_input:
     with st.spinner("A carregar dados do ZwiftPower em tempo real..."):
-        data_json = fetch_zwiftpower_data(event_id_input)
+        data_view = fetch_zwiftpower_endpoint(event_id_input, "view")
+        data_primes = fetch_zwiftpower_endpoint(event_id_input, "primes")
 
-        if data_json and "data" in data_json:
+        if data_view and "data" in data_view:
             st.success("Dados do ZwiftPower carregados com sucesso!")
 
             tab_geral, tab_primes = st.tabs(
                 ["🏆 Classificação Geral", "⚡ Primes / Sprints"]
             )
 
-            # Preparar DataFrame principal
-            results = data_json["data"]
-            df = pd.DataFrame(results)
-
-            if "name" in df.columns:
-                df["name"] = df["name"].apply(lambda x: html.unescape(str(x)))
-
-            if "time_gun" in df.columns:
-                df["Tempo"] = df["time_gun"].apply(format_time)
-
             # --- TAB 1: CLASSIFICAÇÃO GERAL ---
             with tab_geral:
+                results = data_view["data"]
+                df = pd.DataFrame(results)
+
+                if "name" in df.columns:
+                    df["name"] = df["name"].apply(
+                        lambda x: html.unescape(str(x))
+                    )
+
+                if "time_gun" in df.columns:
+                    df["Tempo"] = df["time_gun"].apply(format_time)
+
                 column_mapping = {
                     "pos": "Pos",
                     "position_in_cat": "Pos Cat",
@@ -109,32 +122,37 @@ if st.sidebar.button("Carregar Dados") or event_id_input:
 
             # --- TAB 2: PRIMES / SPRINTS ---
             with tab_primes:
-                st.subheader("Pontuação e Primes do Evento")
+                st.subheader("⚡ Resultados de Banners e Primes por Volta")
 
-                # Verificar se existem pontos atribuídos na classificação
-                if "pts" in df.columns and df["pts"].replace("", None).notnull().any():
-                    df_pts = df[df["pts"].replace("", None).notnull()].copy()
-                    
-                    column_mapping_pts = {
-                        "pts_pos": "Pos Pontos",
-                        "pos": "Pos Geral",
-                        "name": "Nome",
-                        "tname": "Equipa",
-                        "pts": "Pontos Totais",
-                    }
-                    
-                    cols_pts = [col for col in column_mapping_pts.keys() if col in df_pts.columns]
-                    df_pts_display = df_pts[cols_pts].rename(columns=column_mapping_pts)
-                    
-                    st.dataframe(
-                        df_pts_display,
-                        use_container_width=True,
-                        hide_index=True,
+                if data_primes:
+                    # O nó 'data' costuma conter a lista de segmentos/voltas
+                    primes_list = (
+                        data_primes.get("data", data_primes)
+                        if isinstance(data_primes, dict)
+                        else data_primes
                     )
+
+                    if isinstance(primes_list, list) and len(primes_list) > 0:
+                        df_primes = pd.DataFrame(primes_list)
+
+                        # Limpar HTML / caracteres especiais de todas as colunas de texto
+                        for col in df_primes.columns:
+                            if df_primes[col].dtype == "object":
+                                df_primes[col] = df_primes[col].apply(
+                                    clean_html_text
+                                )
+
+                        st.dataframe(
+                            df_primes,
+                            use_container_width=True,
+                            hide_index=True,
+                        )
+                    else:
+                        st.info("Nenhum registo de segmento encontrado no ficheiro de primes.")
                 else:
-                    st.info(
-                        "ℹ️ Este evento não possui classificação de Primes/Pontos registada nas definições "
-                        "ou a corrida ainda não atribuiu pontos por segmento."
+                    st.warning(
+                        "Não foi possível obter os dados da aba Primes. "
+                        "Verifica se o Cookie do ZwiftPower precisa de ser renovado nos Secrets."
                     )
 
         else:
