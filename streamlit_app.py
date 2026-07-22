@@ -61,53 +61,29 @@ def fetch_view_json(session, event_id):
     return None
 
 
-def fetch_primes_html(session, event_id):
-    """Procura os dados de primes tentando os endpoints de API e scraping das tabelas HTML."""
-    timestamp = int(time.time() * 1000)
-    json_url = f"https://zwiftpower.com/cache3/results/{event_id}_primes.json?_={timestamp}"
-
-    try:
-        res = session.get(json_url, timeout=10)
-        if res.status_code == 200:
-            data = res.json()
-            items = data.get("data", data) if isinstance(data, dict) else data
-            if isinstance(items, list) and len(items) > 0:
-                return pd.DataFrame(items)
-    except Exception:
-        pass
-
-    html_urls = [
-        f"https://zwiftpower.com/api.php?do=event_primes&zid={event_id}",
-        f"https://zwiftpower.com/events.php?zid={event_id}&tab=primes",
-        f"https://zwiftpower.com/events.php?zid={event_id}",
+def fetch_primes_json(session, event_id):
+    """Procura os dados de primes/sprints diretamente na API do ZwiftPower."""
+    urls = [
+        f"https://zwiftpower.com/api.php?do=event_sprints&zid={event_id}",
+        f"https://zwiftpower.com/cache3/results/{event_id}_primes.json",
     ]
 
-    for url in html_urls:
+    for url in urls:
         try:
             res = session.get(url, timeout=10)
             if res.status_code == 200:
-                soup = BeautifulSoup(res.text, "html.parser")
-                tables = soup.find_all("table")
-                for table in tables:
-                    rows = []
-                    for tr in table.find_all("tr"):
-                        cells = [
-                            td.get_text(strip=True)
-                            for td in tr.find_all(["td", "th"])
-                        ]
-                        if cells:
-                            rows.append(cells)
+                data = res.json()
 
-                    if len(rows) > 1:
-                        header = rows[0]
-                        if any(
-                            col.lower()
-                            in ["banner", "lap", "1st", "2nd", "sprint"]
-                            for col in header
-                        ):
-                            return pd.DataFrame(rows[1:], columns=header)
+                # Caso venha no formato { "data": [...] }
+                if isinstance(data, dict) and "data" in data:
+                    data = data["data"]
+
+                if isinstance(data, list) and len(data) > 0:
+                    return pd.DataFrame(data)
         except Exception:
             continue
+
+    return None
 
     return None
 
